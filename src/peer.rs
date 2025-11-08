@@ -112,12 +112,14 @@ impl PeerMap {
                     peer.write().await.guid = guid;
                 }
             }
+            self.set_status(&id, PeerStatus::Connected).await;
         } else {
             if let Err(err) = self.db.update_pk(&guid, &id, &pk, &info_str).await {
                 log::error!("db.update_pk failed: {}", err);
                 return register_pk_response::Result::SERVER_ERROR;
             }
             log::info!("pk updated instead of insert");
+            self.set_status(&id, PeerStatus::Connected).await;
         }
         register_pk_response::Result::OK
     }
@@ -175,5 +177,28 @@ impl PeerMap {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    pub(crate) async fn set_status(&self, id: &str, status: PeerStatus) {
+        if id == "(:test_hbbs:)" {
+            return;
+        }
+        if let Err(err) = self.db.update_status_by_id(id, status.into()).await {
+            log::warn!("Failed to update status for {}: {}", id, err);
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub(crate) enum PeerStatus {
+    Disabled = 0,
+    Connected = 1,
+    Disconnected = 2,
+}
+
+impl From<PeerStatus> for i64 {
+    fn from(value: PeerStatus) -> Self {
+        value as i64
     }
 }

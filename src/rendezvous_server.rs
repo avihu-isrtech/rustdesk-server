@@ -114,6 +114,7 @@ impl RendezvousServer {
                 }
                 for id in to_notify {
                     http_api::notify_peer_possible_disconnection(&id);
+                    pm.set_status(&id, PeerStatus::Disconnected).await;
                 }
             }
         });
@@ -349,6 +350,7 @@ impl RendezvousServer {
                     // B registered
                     if !rp.id.is_empty() {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
+                        self.pm.set_status(&rp.id, PeerStatus::Connected).await;
                         http_api::notify_peer_registered(&rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
