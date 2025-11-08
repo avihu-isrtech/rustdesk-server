@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use hbb_common::{log, ResultType};
 use sqlx::Row;
 use sqlx::{
@@ -60,7 +61,7 @@ pub struct Peer {
     pub id: String,
     pub uuid: Vec<u8>,
     pub pk: Vec<u8>,
-    pub created_at: String,
+    pub created_at: i64,
     pub user: Option<Vec<u8>>,
     pub info: String,
     pub note: Option<String>,
@@ -115,16 +116,25 @@ impl Database {
     }
 
     fn map_row(row: SqliteRow) -> Peer {
+        let create_at_value: String = row.get("created_at");
+        let naive = NaiveDateTime::parse_from_str(&create_at_value, "%Y-%m-%d %H:%M:%S");
+        let created_at = if naive.is_ok() {
+            let dt = Utc.from_utc_datetime(&naive.unwrap());
+            dt.timestamp() * 1000
+        } else {
+            0
+        };
+
         Peer {
             guid: row.get("guid"),
             id: row.get("id"),
             uuid: row.get("uuid"),
             pk: row.get("pk"),
             user: row.get("user"),
-            created_at: row.get("created_at"),
+            created_at,
             status: row.get("status"),
             info: row.get("info"),
-            note: row.get::<Option<String>, _>("note"),
+            note: row.get("note"),
         }
     }
 

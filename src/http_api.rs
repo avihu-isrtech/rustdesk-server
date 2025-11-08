@@ -37,7 +37,7 @@ struct PeerResponse {
     id: Option<String>,
     uuid: Option<String>,
     public_key: Option<String>,
-    created_at: Option<String>,
+    created_at: Option<i64>,
     user: Option<String>,
     status: Option<i64>,
     info: Option<String>,
