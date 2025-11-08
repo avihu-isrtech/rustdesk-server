@@ -2,7 +2,7 @@ use crate::database::{self, Database, Peer};
 use async_stream::stream;
 use axum::{
     extract::{Extension, Path},
-    http::{header::AUTHORIZATION, Request, StatusCode},
+    http::{header::AUTHORIZATION, Method, Request, StatusCode},
     middleware::{from_fn, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{convert::Infallible, net::SocketAddr, process, sync::Arc, thread, time::Duration};
 use tokio::sync::broadcast::{self, error::RecvError};
+use tower_http::cors::CorsLayer;
 
 const HTTP_PORT: u16 = 37_000;
 const EVENT_BUFFER: usize = 128;
@@ -33,12 +34,13 @@ struct ApiState {
 #[derive(Serialize)]
 struct PeerResponse {
     guid: String,
-    id: String,
-    uuid: String,
-    pk: String,
+    id: Option<String>,
+    uuid: Option<String>,
+    public_key: Option<String>,
+    created_at: Option<String>,
     user: Option<String>,
     status: Option<i64>,
-    info: String,
+    info: Option<String>,
     note: Option<String>,
 }
 
@@ -71,12 +73,13 @@ impl From<Peer> for PeerResponse {
     fn from(peer: Peer) -> Self {
         Self {
             guid: base64::encode(peer.guid),
-            id: peer.id,
-            uuid: base64::encode(peer.uuid),
-            pk: base64::encode(peer.pk),
+            id: Option::from(peer.id),
+            uuid: Option::from(base64::encode(peer.uuid)),
+            public_key: Option::from(base64::encode(peer.pk)),
+            created_at: Option::from(peer.created_at),
             user: peer.user.map(base64::encode),
             status: peer.status,
-            info: peer.info,
+            info: Option::from(peer.info),
             note: peer.note,
         }
     }
@@ -114,11 +117,11 @@ fn run_http_server_blocking() -> ResultType<()> {
 async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType<()> {
     let shared_state = Arc::new(state);
     let app = Router::new()
-        .route("/peers", get(list_peers))
-        .route("/peers/:guid", get(get_peer).delete(delete_peer))
-        .route("/peers/:guid/note", patch(update_note))
-        .route("/peers/:guid/info", patch(update_info))
-        .route("/peers/:guid/user", patch(update_user))
+        .route("/api/v1/peers", get(list_peers))
+        .route("/api/v1/peers/:guid", get(get_peer).delete(delete_peer))
+        .route("/api/v1/peers/:guid/note", patch(update_note))
+        .route("/api/v1/peers/:guid/info", patch(update_info))
+        .route("/api/v1/peers/:guid/user", patch(update_user))
         .route("/events/peers", get(peer_events_stream))
         .layer(Extension(shared_state))
         .layer(from_fn({
@@ -127,7 +130,8 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
                 let token = token.clone();
                 async move { ensure_authorized(req, next, token).await }
             }
-        }));
+        }))
+        .layer(CorsLayer::permissive());
     let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
     log::info!("Listening on http :{}", addr.port());
     axum::Server::bind(&addr)
@@ -325,6 +329,9 @@ async fn ensure_authorized<B>(
     next: Next<B>,
     expected: Arc<String>,
 ) -> Result<Response, StatusCode> {
+    if req.method() == Method::OPTIONS {
+        return Ok(next.run(req).await);
+    }
     let header = req
         .headers()
         .get(AUTHORIZATION)

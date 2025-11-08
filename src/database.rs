@@ -60,6 +60,7 @@ pub struct Peer {
     pub id: String,
     pub uuid: Vec<u8>,
     pub pk: Vec<u8>,
+    pub created_at: String,
     pub user: Option<Vec<u8>>,
     pub info: String,
     pub note: Option<String>,
@@ -120,6 +121,7 @@ impl Database {
             uuid: row.get("uuid"),
             pk: row.get("pk"),
             user: row.get("user"),
+            created_at: row.get("created_at"),
             status: row.get("status"),
             info: row.get("info"),
             note: row.get::<Option<String>, _>("note"),
@@ -128,7 +130,7 @@ impl Database {
 
     pub async fn get_peer(&self, id: &str) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note from peer where id = ?",
+            "select guid, id, uuid, pk, user, status, info, note, created_at from peer where id = ?",
         )
         .bind(id)
         .fetch_optional(self.pool.get().await?.deref_mut())
@@ -139,7 +141,7 @@ impl Database {
 
     pub async fn get_peer_by_guid(&self, guid: &[u8]) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note from peer where guid = ?",
+            "select guid, id, uuid, pk, user, status, info, note, created_at from peer where guid = ?",
         )
         .bind(guid)
         .fetch_optional(self.pool.get().await?.deref_mut())
@@ -148,9 +150,11 @@ impl Database {
     }
 
     pub async fn get_peers(&self) -> ResultType<Vec<Peer>> {
-        let rows = sqlx::query("select guid, id, uuid, pk, user, status, info, note from peer")
-            .fetch_all(self.pool.get().await?.deref_mut())
-            .await?;
+        let rows = sqlx::query(
+            "select guid, id, uuid, pk, user, status, info, note, created_at from peer",
+        )
+        .fetch_all(self.pool.get().await?.deref_mut())
+        .await?;
 
         let peers = rows.into_iter().map(Self::map_row).collect();
 
