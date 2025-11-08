@@ -3,7 +3,7 @@
 
 use flexi_logger::*;
 use hbb_common::{bail, config::RENDEZVOUS_PORT, ResultType};
-use hbbs::{common::*, *};
+use hbbs::{common::*, http_api, *};
 
 const RMEM: usize = 0;
 
@@ -32,6 +32,7 @@ fn main() -> ResultType<()> {
     let rmem = get_arg("rmem").parse::<usize>().unwrap_or(RMEM);
     let serial: i32 = get_arg("serial").parse().unwrap_or(0);
     crate::common::check_software_update();
+    http_api::spawn_http_server();
     RendezvousServer::start(port, serial, &get_arg_or("key", "-".to_owned()), rmem)?;
     Ok(())
 }

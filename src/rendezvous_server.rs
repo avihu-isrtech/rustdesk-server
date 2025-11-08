@@ -1,4 +1,5 @@
 use crate::common::*;
+use crate::http_api;
 use crate::peer::*;
 use hbb_common::{
     allow_err, bail,
@@ -47,7 +48,8 @@ enum Data {
     RelayServers(RelayServers),
 }
 
-const REG_TIMEOUT: i32 = 30_000;
+const REG_TIMEOUT: i32 = 25_000;
+const DISCONNECT_CHECK_INTERVAL_MS: u64 = 3_000;
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
 enum Sink {
@@ -90,6 +92,33 @@ enum LoopFailure {
 }
 
 impl RendezvousServer {
+    fn spawn_disconnect_monitor(&self) {
+        let pm = self.pm.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_millis(DISCONNECT_CHECK_INTERVAL_MS));
+            loop {
+                ticker.tick().await;
+                let snapshot = pm.snapshot().await;
+                let mut to_notify = Vec::new();
+                for (id, peer_lock) in snapshot {
+                    let mut peer = peer_lock.write().await;
+                    let elapsed = peer.last_reg_time.elapsed().as_millis() as i32;
+                    if elapsed >= REG_TIMEOUT {
+                        if !peer.disconnect_notified {
+                            peer.disconnect_notified = true;
+                            to_notify.push(id.clone());
+                        }
+                    } else if peer.disconnect_notified {
+                        peer.disconnect_notified = false;
+                    }
+                }
+                for id in to_notify {
+                    http_api::notify_peer_possible_disconnection(&id);
+                }
+            }
+        });
+    }
+
     #[tokio::main(flavor = "multi_thread")]
     pub async fn start(port: i32, serial: i32, key: &str, rmem: usize) -> ResultType<()> {
         let (key, sk) = Self::get_server_sk(key);
@@ -135,6 +164,7 @@ impl RendezvousServer {
                 local_ip,
             }),
         };
+        rs.spawn_disconnect_monitor();
         log::info!("mask: {:?}", rs.inner.mask);
         log::info!("local-ip: {:?}", rs.inner.local_ip);
         std::env::set_var("PORT_FOR_API", port.to_string());
@@ -319,6 +349,7 @@ impl RendezvousServer {
                     // B registered
                     if !rp.id.is_empty() {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
+                        http_api::notify_peer_registered(&rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
                             let mut msg_out = RendezvousMessage::new();
@@ -579,6 +610,7 @@ impl RendezvousServer {
             if !request_pk {
                 old.socket_addr = socket_addr;
                 old.last_reg_time = Instant::now();
+                old.disconnect_notified = false;
             }
             let ip_change = if ip_change && old.reg_pk.0 <= 2 {
                 Some(if old.socket_addr.port() == 0 {
