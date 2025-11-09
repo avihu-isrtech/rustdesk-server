@@ -99,6 +99,7 @@ impl Database {
                 uuid blob not null,
                 pk blob not null,
                 created_at datetime not null default(current_timestamp),
+                last_heartbeat datetime not null default(current_timestamp),
                 user blob,
                 status tinyint,
                 note varchar(300),
@@ -245,6 +246,31 @@ impl Database {
     pub async fn update_status_by_id(&self, id: &str, status: i64) -> ResultType<()> {
         sqlx::query("update peer set status=? where id=?")
             .bind(status)
+            .bind(id)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_status_by_guid(&self, guid: &[u8], status: i64) -> ResultType<()> {
+        sqlx::query("update peer set status=? where guid=?")
+            .bind(status)
+            .bind(guid)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_heartbeat_by_guid(&self, guid: &[u8]) -> ResultType<()> {
+        sqlx::query("update peer set last_heartbeat=CURRENT_TIMESTAMP where guid=?")
+            .bind(guid)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_heartbeat_by_id(&self, id: &str) -> ResultType<()> {
+        sqlx::query("update peer set last_heartbeat=CURRENT_TIMESTAMP where id=?")
             .bind(id)
             .execute(self.pool.get().await?.deref_mut())
             .await?;

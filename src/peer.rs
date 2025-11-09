@@ -143,14 +143,14 @@ impl PeerMap {
                     peer.write().await.guid = guid;
                 }
             }
-            self.set_status(&id, PeerStatus::Connected).await;
+            self.set_status_by_id(&id, PeerStatus::Connected).await;
         } else {
             if let Err(err) = self.db.update_pk(&guid, &id, &rk.pk, &info_str).await {
                 log::error!("db.update_pk failed: {}", err);
                 return register_pk_response::Result::SERVER_ERROR;
             }
             log::info!("pk updated instead of insert");
-            self.set_status(&id, PeerStatus::Connected).await;
+            self.set_status_by_id(&id, PeerStatus::Connected).await;
         }
         register_pk_response::Result::OK
     }
@@ -210,12 +210,30 @@ impl PeerMap {
             .collect()
     }
 
-    pub(crate) async fn set_status(&self, id: &str, status: PeerStatus) {
+    pub(crate) async fn set_status_by_id(&self, id: &str, status: PeerStatus) {
         if id == "(:test_hbbs:)" {
             return;
         }
         if let Err(err) = self.db.update_status_by_id(id, status.into()).await {
             log::warn!("Failed to update status for {}: {}", id, err);
+        }
+    }
+
+    pub(crate) async fn set_status_by_guid(&self, guid: &[u8], status: PeerStatus) {
+        if let Err(err) = self.db.update_status_by_guid(guid, status.into()).await {
+            log::warn!("Failed to update status for {:x?}: {}", guid, err);
+        }
+    }
+
+    pub(crate) async fn touch_heartbeat_by_id(&self, id: &str) {
+        if let Err(err) = self.db.touch_heartbeat_by_id(id).await {
+            log::warn!("Failed to touch heartbeat for {}: {}", id, err);
+        }
+    }
+
+    pub(crate) async fn touch_heartbeat_by_guid(&self, guid: &[u8]) {
+        if let Err(err) = self.db.touch_heartbeat_by_guid(guid).await {
+            log::warn!("Failed to touch heartbeat for {:x?}: {}", guid, err);
         }
     }
 }
