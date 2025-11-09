@@ -1,7 +1,7 @@
 use crate::database::{self, Database, Peer};
 use async_stream::stream;
 use axum::{
-    extract::{Extension, Path},
+    extract::{Extension, Path, Query},
     http::{header::AUTHORIZATION, Method, Request, StatusCode},
     middleware::{from_fn, Next},
     response::{
@@ -29,6 +29,7 @@ static PEER_EVENT_BUS: OnceCell<broadcast::Sender<PeerEvent>> = OnceCell::new();
 struct ApiState {
     db: Database,
     peer_events: broadcast::Sender<PeerEvent>,
+    auth_token: Arc<String>,
 }
 
 #[derive(Serialize)]
@@ -109,6 +110,7 @@ fn run_http_server_blocking() -> ResultType<()> {
         let state = ApiState {
             db,
             peer_events: events,
+            auth_token: auth_token.clone(),
         };
         run_http_server(state, auth_token).await
     })
@@ -116,21 +118,27 @@ fn run_http_server_blocking() -> ResultType<()> {
 
 async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType<()> {
     let shared_state = Arc::new(state);
-    let app = Router::new()
+    let header_token = auth_token.clone();
+
+    let protected_routes = Router::new()
         .route("/api/v1/peers", get(list_peers))
         .route("/api/v1/peers/:guid", get(get_peer).delete(delete_peer))
         .route("/api/v1/peers/:guid/note", patch(update_note))
         .route("/api/v1/peers/:guid/info", patch(update_info))
         .route("/api/v1/peers/:guid/user", patch(update_user))
-        .route("/events/peers", get(peer_events_stream))
-        .layer(Extension(shared_state))
         .layer(from_fn({
-            let token = auth_token.clone();
+            let token = header_token.clone();
             move |req, next| {
                 let token = token.clone();
                 async move { ensure_authorized(req, next, token).await }
             }
-        }))
+        }));
+
+    let sse_route = Router::new().route("/api/v1/events/peers", get(peer_events_stream));
+
+    let app = protected_routes
+        .merge(sse_route)
+        .layer(Extension(shared_state))
         .layer(CorsLayer::permissive());
     let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
     log::info!("Listening on http :{}", addr.port());
@@ -185,6 +193,11 @@ struct InfoPayload {
 #[derive(Deserialize)]
 struct UserPayload {
     user: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SseAuthQuery {
+    token: String,
 }
 
 async fn update_note(
@@ -253,7 +266,11 @@ async fn delete_peer(
 
 async fn peer_events_stream(
     Extension(state): Extension<Arc<ApiState>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    Query(params): Query<SseAuthQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    if params.token != *state.auth_token {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let mut receiver = state.peer_events.subscribe();
     let event_stream = stream! {
         loop {
@@ -271,11 +288,11 @@ async fn peer_events_stream(
             }
         }
     };
-    Sse::new(event_stream).keep_alive(
+    Ok(Sse::new(event_stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(KEEP_ALIVE_SECS))
             .text("keep-alive"),
-    )
+    ))
 }
 
 pub fn notify_peer_registered(id: &str, addr: &SocketAddr) {

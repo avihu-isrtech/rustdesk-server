@@ -27,6 +27,30 @@ pub const IP_BLOCK_DUR: u64 = 60;
 pub(crate) struct PeerInfo {
     #[serde(default)]
     pub(crate) ip: String,
+
+    #[serde(default)]
+    pub(crate) platform: String,
+
+    #[serde(default)]
+    pub(crate) real_name: String,
+
+    #[serde(default)]
+    pub(crate) username: String,
+
+    #[serde(default)]
+    pub(crate) device_name: String,
+
+    #[serde(default)]
+    pub(crate) architecture: String,
+
+    #[serde(default)]
+    pub(crate) desktop_env: String,
+
+    #[serde(default)]
+    pub(crate) distro: String,
+
+    #[serde(default)]
+    pub(crate) languages: String
 }
 
 pub(crate) struct Peer {
@@ -84,18 +108,25 @@ impl PeerMap {
         id: String,
         peer: LockPeer,
         addr: SocketAddr,
-        uuid: Bytes,
-        pk: Bytes,
         ip: String,
+        rk: &RegisterPk,
     ) -> register_pk_response::Result {
-        log::info!("update_pk {} {:?} {:?} {:?}", id, addr, uuid, pk);
+        log::info!("update_pk {} {:?} {:?} {:?}", id, addr, rk.uuid, rk.pk);
         let (info_str, guid) = {
             let mut w = peer.write().await;
             w.socket_addr = addr;
-            w.uuid = uuid.clone();
-            w.pk = pk.clone();
+            w.uuid = rk.uuid.clone();
+            w.pk = rk.pk.clone();
             w.last_reg_time = Instant::now();
             w.info.ip = ip;
+            w.info.platform = rk.platform.clone();
+            w.info.real_name = rk.real_name.clone();
+            w.info.username = rk.username.clone();
+            w.info.device_name = rk.device_name.clone();
+            w.info.architecture = rk.architecture.clone();
+            w.info.desktop_env = rk.desktop_env.clone();
+            w.info.distro = rk.distro.clone();
+            w.info.languages = rk.languages.clone();
             w.disconnect_notified = false;
             (
                 serde_json::to_string(&w.info).unwrap_or_default(),
@@ -103,7 +134,7 @@ impl PeerMap {
             )
         };
         if guid.is_empty() {
-            match self.db.insert_peer(&id, &uuid, &pk, &info_str).await {
+            match self.db.insert_peer(&id, &rk.uuid, &rk.pk, &info_str).await {
                 Err(err) => {
                     log::error!("db.insert_peer failed: {}", err);
                     return register_pk_response::Result::SERVER_ERROR;
@@ -114,7 +145,7 @@ impl PeerMap {
             }
             self.set_status(&id, PeerStatus::Connected).await;
         } else {
-            if let Err(err) = self.db.update_pk(&guid, &id, &pk, &info_str).await {
+            if let Err(err) = self.db.update_pk(&guid, &id, &rk.pk, &info_str).await {
                 log::error!("db.update_pk failed: {}", err);
                 return register_pk_response::Result::SERVER_ERROR;
             }
