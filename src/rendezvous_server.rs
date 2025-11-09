@@ -351,6 +351,7 @@ impl RendezvousServer {
                     if !rp.id.is_empty() {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
                         self.pm.set_status_by_id(&rp.id, PeerStatus::Connected).await;
+                        self.pm.touch_heartbeat_by_id(&rp.id).await;
                         http_api::notify_peer_registered(&rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
