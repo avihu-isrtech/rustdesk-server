@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{NaiveDateTime, TimeZone, Utc};
 use hbb_common::{log, ResultType};
+use serde_derive::Serialize;
 use sqlx::Row;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
@@ -55,13 +56,38 @@ pub struct Database {
     pool: Pool,
 }
 
-#[derive(Default)]
+fn as_base64<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let encoded = base64::encode(bytes);
+    serializer.serialize_str(&encoded)
+}
+
+fn as_base64_option<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match bytes {
+        Some(b) => serializer.serialize_str(&base64::encode(b)),
+        None => serializer.serialize_none(),
+    }
+}
+
+#[derive(Default, Clone, Debug, Serialize)]
 pub struct Peer {
+    #[serde(serialize_with = "as_base64")]
     pub guid: Vec<u8>,
     pub id: String,
+    #[serde(serialize_with = "as_base64")]
     pub uuid: Vec<u8>,
+
+    #[serde(serialize_with = "as_base64")]
     pub pk: Vec<u8>,
     pub created_at: i64,
+    pub last_heartbeat: i64,
+
+    #[serde(serialize_with = "as_base64_option")]
     pub user: Option<Vec<u8>>,
     pub info: String,
     pub note: Option<String>,
@@ -118,9 +144,19 @@ impl Database {
 
     fn map_row(row: SqliteRow) -> Peer {
         let create_at_value: String = row.get("created_at");
-        let naive = NaiveDateTime::parse_from_str(&create_at_value, "%Y-%m-%d %H:%M:%S");
-        let created_at = if naive.is_ok() {
-            let dt = Utc.from_utc_datetime(&naive.unwrap());
+        let naive_create_at = NaiveDateTime::parse_from_str(&create_at_value, "%Y-%m-%d %H:%M:%S");
+        let created_at = if naive_create_at.is_ok() {
+            let dt = Utc.from_utc_datetime(&naive_create_at.unwrap());
+            dt.timestamp() * 1000
+        } else {
+            0
+        };
+
+        let last_heartbeat_value: String = row.get("last_heartbeat");
+        let naive_last_heartbeat =
+            NaiveDateTime::parse_from_str(&last_heartbeat_value, "%Y-%m-%d %H:%M:%S");
+        let last_heartbeat = if naive_last_heartbeat.is_ok() {
+            let dt = Utc.from_utc_datetime(&naive_last_heartbeat.unwrap());
             dt.timestamp() * 1000
         } else {
             0
@@ -133,6 +169,7 @@ impl Database {
             pk: row.get("pk"),
             user: row.get("user"),
             created_at,
+            last_heartbeat,
             status: row.get("status"),
             info: row.get("info"),
             note: row.get("note"),
@@ -141,7 +178,7 @@ impl Database {
 
     pub async fn get_peer(&self, id: &str) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at from peer where id = ?",
+            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer where id = ?",
         )
         .bind(id)
         .fetch_optional(self.pool.get().await?.deref_mut())
@@ -152,7 +189,7 @@ impl Database {
 
     pub async fn get_peer_by_guid(&self, guid: &[u8]) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at from peer where guid = ?",
+            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer where guid = ?",
         )
         .bind(guid)
         .fetch_optional(self.pool.get().await?.deref_mut())
@@ -162,7 +199,7 @@ impl Database {
 
     pub async fn get_peers(&self) -> ResultType<Vec<Peer>> {
         let rows = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at from peer",
+            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer",
         )
         .fetch_all(self.pool.get().await?.deref_mut())
         .await?;
@@ -247,6 +284,33 @@ impl Database {
         sqlx::query("update peer set status=? where id=?")
             .bind(status)
             .bind(id)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_status_and_touch_heartbeat_by_id(
+        &self,
+        id: &str,
+        status: i64,
+    ) -> ResultType<u64> {
+        let result =
+            sqlx::query("update peer set status=?, last_heartbeat=CURRENT_TIMESTAMP where id=?")
+                .bind(status)
+                .bind(id)
+                .execute(self.pool.get().await?.deref_mut())
+                .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn update_status_and_touch_heartbeat_by_guid(
+        &self,
+        guid: &[u8],
+        status: i64,
+    ) -> ResultType<()> {
+        sqlx::query("update peer set status=?, last_heartbeat=CURRENT_TIMESTAMP where guid=?")
+            .bind(status)
+            .bind(guid)
             .execute(self.pool.get().await?.deref_mut())
             .await?;
         Ok(())

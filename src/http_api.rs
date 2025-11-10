@@ -39,6 +39,7 @@ struct PeerResponse {
     uuid: Option<String>,
     public_key: Option<String>,
     created_at: Option<i64>,
+    last_heartbeat: Option<i64>,
     user: Option<String>,
     status: Option<i64>,
     info: Option<String>,
@@ -49,23 +50,35 @@ struct PeerResponse {
 struct PeerEvent {
     kind: &'static str,
     peer_id: String,
-    addr: Option<String>,
+    peer_guid: String,
+    peer: Option<Peer>
 }
 
 impl PeerEvent {
-    fn registered(id: &str, addr: &SocketAddr) -> Self {
+    fn registered(peer: &Peer) -> Self {
         Self {
-            kind: "peer-registered",
-            peer_id: id.to_owned(),
-            addr: Some(addr.to_string()),
+            kind: "peer_registered",
+            peer_id: peer.id.to_owned(),
+            peer_guid: base64::encode(peer.guid.to_owned()),
+            peer: Option::from(peer.to_owned()),
         }
     }
 
-    fn possible_disconnection(id: &str) -> Self {
+    fn possible_disconnection(id: &str, guid: &str) -> Self {
         Self {
-            kind: "possible-disconnection",
+            kind: "possible_disconnection",
             peer_id: id.to_owned(),
-            addr: None,
+            peer_guid: guid.to_owned(),
+            peer: None,
+        }
+    }
+
+    fn heartbeat(id: &str, guid: &str) -> Self {
+        Self {
+            kind: "device_heartbeat",
+            peer_id: id.to_owned(),
+            peer_guid: guid.to_owned(),
+            peer: None,
         }
     }
 }
@@ -78,6 +91,7 @@ impl From<Peer> for PeerResponse {
             uuid: Option::from(base64::encode(peer.uuid)),
             public_key: Option::from(base64::encode(peer.pk)),
             created_at: Option::from(peer.created_at),
+            last_heartbeat: Option::from(peer.last_heartbeat),
             user: peer.user.map(base64::encode),
             status: peer.status,
             info: Option::from(peer.info),
@@ -295,12 +309,16 @@ async fn peer_events_stream(
     ))
 }
 
-pub fn notify_peer_registered(id: &str, addr: &SocketAddr) {
-    emit_event(|| PeerEvent::registered(id, addr), id);
+pub fn notify_peer_registered(peer: &Peer) {
+    emit_event(|| PeerEvent::registered(peer), &peer.id);
 }
 
-pub fn notify_peer_possible_disconnection(id: &str) {
-    emit_event(|| PeerEvent::possible_disconnection(id), id);
+pub fn notify_peer_heartbeat(id: &str, guid: &str) {
+    emit_event(|| PeerEvent::heartbeat(id, guid), id);
+}
+
+pub fn notify_peer_possible_disconnection(id: &str, guid: &str) {
+    emit_event(|| PeerEvent::possible_disconnection(id, guid), id);
 }
 
 fn peer_event_sender() -> broadcast::Sender<PeerEvent> {

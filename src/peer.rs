@@ -47,10 +47,16 @@ pub(crate) struct PeerInfo {
     pub(crate) desktop_env: String,
 
     #[serde(default)]
+    pub(crate) os_version: String,
+
+    #[serde(default)]
+    pub(crate) app_version: String,
+
+    #[serde(default)]
     pub(crate) distro: String,
 
     #[serde(default)]
-    pub(crate) languages: String
+    pub(crate) languages: String,
 }
 
 pub(crate) struct Peer {
@@ -125,6 +131,8 @@ impl PeerMap {
             w.info.device_name = rk.device_name.clone();
             w.info.architecture = rk.architecture.clone();
             w.info.desktop_env = rk.desktop_env.clone();
+            w.info.os_version = rk.os_version.clone();
+            w.info.app_version = rk.app_version.clone();
             w.info.distro = rk.distro.clone();
             w.info.languages = rk.languages.clone();
             w.disconnect_notified = false;
@@ -208,6 +216,45 @@ impl PeerMap {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    pub(crate) async fn set_status_and_touch_heartbeat_by_id(
+        &self,
+        id: &str,
+        status: PeerStatus,
+    ) -> bool {
+        if id == "(:test_hbbs:)" {
+            return false;
+        }
+        match self.db.update_status_and_touch_heartbeat_by_id(id, status.into()).await
+        {
+            Ok(affected) => {
+                if affected > 0 {
+                    true
+                } else {
+                    log::debug!("No rows updated for id {}", id);
+                    false
+                }
+            }
+            Err(err) => {
+                log::warn!("Failed to update status for {}: {}", id, err);
+                false
+            }
+        }
+    }
+
+    pub(crate) async fn set_status_and_touch_heartbeat_by_guid(
+        &self,
+        guid: &[u8],
+        status: PeerStatus,
+    ) {
+        if let Err(err) = self
+            .db
+            .update_status_and_touch_heartbeat_by_guid(guid, status.into())
+            .await
+        {
+            log::warn!("Failed to update status for {:x?}: {}", guid, err);
+        }
     }
 
     pub(crate) async fn set_status_by_id(&self, id: &str, status: PeerStatus) {

@@ -106,14 +106,14 @@ impl RendezvousServer {
                     if elapsed >= REG_TIMEOUT {
                         if !peer.disconnect_notified {
                             peer.disconnect_notified = true;
-                            to_notify.push(id.clone());
+                            to_notify.push((id.clone(), peer.guid.clone()));
                         }
                     } else if peer.disconnect_notified {
                         peer.disconnect_notified = false;
                     }
                 }
-                for id in to_notify {
-                    http_api::notify_peer_possible_disconnection(&id);
+                for (id, guid) in to_notify {
+                    http_api::notify_peer_possible_disconnection(&id, &base64::encode(&guid));
                     pm.set_status_by_id(&id, PeerStatus::Disconnected).await;
                 }
             }
@@ -350,9 +350,13 @@ impl RendezvousServer {
                     // B registered
                     if !rp.id.is_empty() {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
-                        self.pm.set_status_by_id(&rp.id, PeerStatus::Connected).await;
-                        self.pm.touch_heartbeat_by_id(&rp.id).await;
-                        http_api::notify_peer_registered(&rp.id, &addr);
+                        let succesfully_updated = self.pm.set_status_and_touch_heartbeat_by_id(&rp.id, PeerStatus::Connected).await;
+                        if (succesfully_updated) {
+                            let cloned_id = rp.id.clone();
+                            if let Ok(Some(peer)) = self.pm.db.get_peer(&cloned_id).await {
+                                http_api::notify_peer_heartbeat(&peer.id, &base64::encode(peer.guid));
+                            }
+                        }
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
                             let mut msg_out = RendezvousMessage::new();
@@ -441,7 +445,11 @@ impl RendezvousServer {
                         }
                     }
                     if changed {
+                        let cloned_id = id.clone();
                         self.pm.update_pk(id, peer, addr, ip, &rk).await;
+                        if let Ok(Some(peer)) = self.pm.db.get_peer(&cloned_id).await {
+                            http_api::notify_peer_registered(&peer);
+                        }
                     }
                     let mut msg_out = RendezvousMessage::new();
                     msg_out.set_register_pk_response(RegisterPkResponse {
