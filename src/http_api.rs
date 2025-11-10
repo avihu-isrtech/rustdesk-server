@@ -19,6 +19,7 @@ use serde_json;
 use std::{convert::Infallible, net::SocketAddr, process, sync::Arc, thread, time::Duration};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tower_http::cors::CorsLayer;
+use urlencoding::decode;
 
 const HTTP_PORT: u16 = 37_000;
 const EVENT_BUFFER: usize = 128;
@@ -378,5 +379,6 @@ async fn ensure_authorized<B>(
 }
 
 fn decode_guid(guid: &str) -> Result<Vec<u8>, StatusCode> {
-    base64::decode(guid).map_err(|_| StatusCode::BAD_REQUEST)
+    let decoded_url = decode(guid).map_err(|_| StatusCode::BAD_REQUEST)?;
+    base64::decode(decoded_url.as_ref()).map_err(|_| StatusCode::BAD_REQUEST)
 }

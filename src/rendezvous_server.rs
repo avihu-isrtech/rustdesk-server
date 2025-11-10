@@ -350,11 +350,17 @@ impl RendezvousServer {
                     // B registered
                     if !rp.id.is_empty() {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
-                        let succesfully_updated = self.pm.set_status_and_touch_heartbeat_by_id(&rp.id, PeerStatus::Connected).await;
-                        if (succesfully_updated) {
+                        let succesfully_updated = self
+                            .pm
+                            .set_status_and_touch_heartbeat_by_id(&rp.id, PeerStatus::Connected)
+                            .await;
+                        if succesfully_updated {
                             let cloned_id = rp.id.clone();
                             if let Ok(Some(peer)) = self.pm.db.get_peer(&cloned_id).await {
-                                http_api::notify_peer_heartbeat(&peer.id, &base64::encode(peer.guid));
+                                http_api::notify_peer_heartbeat(
+                                    &peer.id,
+                                    &base64::encode(peer.guid),
+                                );
                             }
                         }
                         self.update_addr(rp.id, addr, socket).await?;
