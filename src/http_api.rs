@@ -8,7 +8,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Response,
     },
-    routing::{get, patch},
+    routing::{get, get_service, patch},
     Json, Router,
 };
 use futures_core::stream::Stream;
@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{convert::Infallible, net::SocketAddr, process, sync::Arc, thread, time::Duration};
 use tokio::sync::broadcast::{self, error::RecvError};
-use tower_http::cors::CorsLayer;
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+};
 use urlencoding::decode;
 
 const HTTP_PORT: u16 = 37_000;
@@ -52,7 +55,7 @@ struct PeerEvent {
     kind: &'static str,
     peer_id: String,
     peer_guid: String,
-    peer: Option<Peer>
+    peer: Option<Peer>,
 }
 
 impl PeerEvent {
@@ -151,8 +154,23 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
 
     let sse_route = Router::new().route("/api/v1/events/peers", get(peer_events_stream));
 
-    let app = protected_routes
+    let static_service = get_service(
+        ServeDir::new("static")
+            .append_index_html_on_directories(true)
+            .not_found_service(ServeFile::new("static/index.html")),
+    )
+    .handle_error(|error: std::io::Error| async move {
+        log::error!("Failed to serve static file: {}", error);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to serve static content",
+        )
+    });
+
+    let app = Router::new()
+        .merge(protected_routes)
         .merge(sse_route)
+        .fallback(static_service)
         .layer(Extension(shared_state))
         .layer(CorsLayer::permissive());
     let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
