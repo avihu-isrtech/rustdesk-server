@@ -168,7 +168,7 @@ impl PeerMap {
         let p = self.map.read().await.get(id).cloned();
         if p.is_some() {
             return p;
-        } else if let Ok(Some(v)) = self.db.get_peer(id).await {
+        } else if let Ok(Some(v)) = self.db.get_peer_by_id(id).await {
             let peer = Peer {
                 guid: v.guid,
                 uuid: v.uuid.into(),

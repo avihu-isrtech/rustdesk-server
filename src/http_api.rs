@@ -1,27 +1,30 @@
-use crate::database::{self, Database, Peer};
+use crate::database::{self, Database, Peer, Tag};
 use async_stream::stream;
 use axum::{
+    body::{boxed, Body, Full},
     extract::{Extension, Path, Query},
-    http::{header::AUTHORIZATION, Method, Request, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderValue, Method, Request, StatusCode, Uri,
+    },
     middleware::{from_fn, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
-        Response,
+        IntoResponse, Response,
     },
-    routing::{get, get_service, patch},
+    routing::{get, patch},
     Json, Router,
 };
 use futures_core::stream::Stream;
 use hbb_common::{log, tokio, ResultType};
 use once_cell::sync::OnceCell;
+use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{convert::Infallible, net::SocketAddr, process, sync::Arc, thread, time::Duration};
 use tokio::sync::broadcast::{self, error::RecvError};
-use tower_http::{
-    cors::CorsLayer,
-    services::{ServeDir, ServeFile},
-};
+use tower::service_fn;
+use tower_http::cors::CorsLayer;
 use urlencoding::decode;
 
 const HTTP_PORT: u16 = 37_000;
@@ -29,11 +32,30 @@ const EVENT_BUFFER: usize = 128;
 const KEEP_ALIVE_SECS: u64 = 15;
 static PEER_EVENT_BUS: OnceCell<broadcast::Sender<PeerEvent>> = OnceCell::new();
 
+#[derive(RustEmbed)]
+#[folder = "static"]
+struct StaticAssets;
+
 #[derive(Clone)]
 struct ApiState {
     db: Database,
     peer_events: broadcast::Sender<PeerEvent>,
     auth_token: Arc<String>,
+}
+
+#[derive(Serialize)]
+struct TagResponse {
+    id: i64,
+    name: String,
+}
+
+impl From<Tag> for TagResponse {
+    fn from(tag: Tag) -> Self {
+        Self {
+            id: tag.id,
+            name: tag.name,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -48,6 +70,25 @@ struct PeerResponse {
     status: Option<i64>,
     info: Option<String>,
     note: Option<String>,
+    tags: Vec<String>,
+}
+
+impl From<Peer> for PeerResponse {
+    fn from(peer: Peer) -> Self {
+        Self {
+            guid: base64::encode(peer.guid),
+            id: Option::from(peer.id),
+            uuid: Option::from(base64::encode(peer.uuid)),
+            public_key: Option::from(base64::encode(peer.pk)),
+            created_at: Option::from(peer.created_at),
+            last_heartbeat: Option::from(peer.last_heartbeat),
+            user: peer.user.map(base64::encode),
+            status: peer.status,
+            info: Option::from(peer.info),
+            note: peer.note,
+            tags: peer.tags,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,23 +128,6 @@ impl PeerEvent {
     }
 }
 
-impl From<Peer> for PeerResponse {
-    fn from(peer: Peer) -> Self {
-        Self {
-            guid: base64::encode(peer.guid),
-            id: Option::from(peer.id),
-            uuid: Option::from(base64::encode(peer.uuid)),
-            public_key: Option::from(base64::encode(peer.pk)),
-            created_at: Option::from(peer.created_at),
-            last_heartbeat: Option::from(peer.last_heartbeat),
-            user: peer.user.map(base64::encode),
-            status: peer.status,
-            info: Option::from(peer.info),
-            note: peer.note,
-        }
-    }
-}
-
 pub fn spawn_http_server() {
     if let Err(err) = thread::Builder::new().name("http-api".into()).spawn(|| {
         if let Err(err) = run_http_server_blocking() {
@@ -139,8 +163,10 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
     let header_token = auth_token.clone();
 
     let protected_routes = Router::new()
+        .route("/api/v1/tags", get(list_tags))
         .route("/api/v1/peers", get(list_peers))
         .route("/api/v1/peers/:guid", get(get_peer).delete(delete_peer))
+        .route("/api/v1/peers/:guid/tags", patch(update_peer_tags))
         .route("/api/v1/peers/:guid/note", patch(update_note))
         .route("/api/v1/peers/:guid/info", patch(update_info))
         .route("/api/v1/peers/:guid/user", patch(update_user))
@@ -154,23 +180,15 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
 
     let sse_route = Router::new().route("/api/v1/events/peers", get(peer_events_stream));
 
-    let static_service = get_service(
-        ServeDir::new("static")
-            .append_index_html_on_directories(true)
-            .not_found_service(ServeFile::new("static/index.html")),
-    )
-    .handle_error(|error: std::io::Error| async move {
-        log::error!("Failed to serve static file: {}", error);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to serve static content",
-        )
+    let spa_service = service_fn(|req: Request<Body>| {
+        let uri = req.uri().clone();
+        async move { Ok::<_, Infallible>(serve_spa(uri).await) }
     });
 
     let app = Router::new()
         .merge(protected_routes)
         .merge(sse_route)
-        .fallback(static_service)
+        .fallback(spa_service)
         .layer(Extension(shared_state))
         .layer(CorsLayer::permissive());
     let addr = SocketAddr::from(([0, 0, 0, 0], HTTP_PORT));
@@ -190,6 +208,20 @@ async fn list_peers(
                 .into_iter()
                 .map(PeerResponse::from)
                 .collect::<Vec<_>>(),
+        )),
+        Err(err) => {
+            log::error!("Failed to fetch peers: {}", err);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn list_tags(
+    Extension(state): Extension<Arc<ApiState>>,
+) -> Result<Json<Vec<TagResponse>>, StatusCode> {
+    match state.db.get_tags().await {
+        Ok(peers) => Ok(Json(
+            peers.into_iter().map(TagResponse::from).collect::<Vec<_>>(),
         )),
         Err(err) => {
             log::error!("Failed to fetch peers: {}", err);
@@ -219,6 +251,11 @@ struct NotePayload {
 }
 
 #[derive(Deserialize)]
+struct UpdatePeerTagsPayload {
+    tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct InfoPayload {
     info: String,
 }
@@ -231,6 +268,23 @@ struct UserPayload {
 #[derive(Deserialize)]
 struct SseAuthQuery {
     token: String,
+}
+
+async fn update_peer_tags(
+    Path(guid): Path<String>,
+    Extension(state): Extension<Arc<ApiState>>,
+    Json(payload): Json<UpdatePeerTagsPayload>,
+) -> Result<StatusCode, StatusCode> {
+    let guid_bytes = decode_guid(&guid)?;
+    state
+        .db
+        .update_peer_tags(&guid_bytes, &payload.tags)
+        .await
+        .map_err(|err| {
+            log::error!("Failed to update note: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn update_note(
@@ -399,4 +453,50 @@ async fn ensure_authorized<B>(
 fn decode_guid(guid: &str) -> Result<Vec<u8>, StatusCode> {
     let decoded_url = decode(guid).map_err(|_| StatusCode::BAD_REQUEST)?;
     base64::decode(decoded_url.as_ref()).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+async fn serve_spa(uri: Uri) -> Response {
+    match resolve_asset_path(&uri) {
+        Some(path) => serve_asset(path),
+        None => (StatusCode::BAD_REQUEST, "Invalid static asset path").into_response(),
+    }
+}
+
+fn serve_asset(path: &str) -> Response {
+    match StaticAssets::get(path) {
+        Some(asset) => asset_response(path, asset),
+        None => {
+            log::trace!("Static asset '{path}' missing, falling back to index.html");
+            StaticAssets::get("index.html")
+                .map(|index| asset_response("index.html", index))
+                .unwrap_or_else(|| {
+                    log::error!("Embedded static assets are missing index.html");
+                    (StatusCode::NOT_FOUND, "Static content unavailable").into_response()
+                })
+        }
+    }
+}
+
+fn asset_response(path: &str, file: EmbeddedFile) -> Response {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let body = boxed(Full::from(file.data.into_owned()));
+    let mut response = Response::new(body);
+    let header_value = HeaderValue::from_str(mime.as_ref()).unwrap_or_else(|err| {
+        log::error!("Failed to parse MIME type for {path}: {err}");
+        HeaderValue::from_static("application/octet-stream")
+    });
+    response.headers_mut().insert(CONTENT_TYPE, header_value);
+    response
+}
+
+fn resolve_asset_path(uri: &Uri) -> Option<&str> {
+    let path = uri.path().trim_start_matches('/');
+    if path.contains("..") {
+        return None;
+    }
+    if path.is_empty() {
+        Some("index.html")
+    } else {
+        Some(path)
+    }
 }

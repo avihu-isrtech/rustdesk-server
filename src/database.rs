@@ -75,6 +75,12 @@ where
 }
 
 #[derive(Default, Clone, Debug, Serialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Default, Clone, Debug, Serialize)]
 pub struct Peer {
     #[serde(serialize_with = "as_base64")]
     pub guid: Vec<u8>,
@@ -92,6 +98,7 @@ pub struct Peer {
     pub info: String,
     pub note: Option<String>,
     pub status: Option<i64>,
+    pub tags: Vec<String>,
 }
 
 impl Database {
@@ -119,22 +126,43 @@ impl Database {
     async fn create_tables(&self) -> ResultType<()> {
         sqlx::query(
             "
-            create table if not exists peer (
-                guid blob primary key not null,
-                id varchar(100) not null,
-                uuid blob not null,
-                pk blob not null,
-                created_at datetime not null default(current_timestamp),
-                last_heartbeat datetime not null default(current_timestamp),
-                user blob,
-                status tinyint,
-                note varchar(300),
-                info text not null
-            ) without rowid;
-            create unique index if not exists index_peer_id on peer (id);
-            create index if not exists index_peer_user on peer (user);
-            create index if not exists index_peer_created_at on peer (created_at);
-            create index if not exists index_peer_status on peer (status);
+-- generate the main peer table
+pragma foreign_keys = on;
+create table if not exists peer
+(
+    guid           blob primary key not null,
+    id             varchar(100)     not null,
+    uuid           blob             not null,
+    pk             blob             not null,
+    created_at     datetime         not null default (current_timestamp),
+    last_heartbeat datetime         not null default (current_timestamp),
+    user           blob,
+    status         tinyint,
+    note           varchar(300),
+    info           text             not null
+) without rowid;
+create unique index if not exists index_peer_id on peer (id);
+create index if not exists index_peer_user on peer (user);
+create index if not exists index_peer_created_at on peer (created_at);
+create index if not exists index_peer_status on peer (status);
+
+-- generate the tag table for the peers
+create table if not exists tags
+(
+    id   integer primary key autoincrement,
+    name varchar(300) unique not null
+);
+
+-- generate the peers-tags connection table
+create table if not exists peer_tags
+(
+    peer_guid blob    not null,
+    tag_id    integer not null,
+    primary key (peer_guid, tag_id),
+    foreign key (peer_guid) references peer (guid) on delete cascade,
+    foreign key (tag_id) references tags (id) on delete cascade
+);
+create index if not exists index_peer_tags_tag_id on peer_tags (tag_id);
         ",
         )
         .execute(self.pool.get().await?.deref_mut())
@@ -142,7 +170,7 @@ impl Database {
         Ok(())
     }
 
-    fn map_row(row: SqliteRow) -> Peer {
+    fn map_peer_row(row: SqliteRow) -> Peer {
         let create_at_value: String = row.get("created_at");
         let naive_create_at = NaiveDateTime::parse_from_str(&create_at_value, "%Y-%m-%d %H:%M:%S");
         let created_at = if naive_create_at.is_ok() {
@@ -162,6 +190,11 @@ impl Database {
             0
         };
 
+        let tags_str: Option<String> = row.get("tags");
+        let tags: Vec<String> = tags_str
+            .map(|s| s.split(',').map(String::from).collect())
+            .unwrap_or_else(Vec::new);
+
         Peer {
             guid: row.get("guid"),
             id: row.get("id"),
@@ -173,40 +206,58 @@ impl Database {
             status: row.get("status"),
             info: row.get("info"),
             note: row.get("note"),
+            tags,
         }
     }
 
-    pub async fn get_peer(&self, id: &str) -> ResultType<Option<Peer>> {
+    fn map_tag_row(row: SqliteRow) -> Tag {
+        Tag {
+            id: row.get("id"),
+            name: row.get("name"),
+        }
+    }
+
+    pub async fn get_peer_by_id(&self, id: &str) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer where id = ?",
+            "select p.*, GROUP_CONCAT(t.name) as tags from peer p left join peer_tags pt on p.guid = pt.peer_guid left join tags t on pt.tag_id = t.id where p.id = ? group by p.guid"
         )
         .bind(id)
         .fetch_optional(self.pool.get().await?.deref_mut())
         .await?;
 
-        Ok(row.map(Self::map_row))
+        Ok(row.map(Self::map_peer_row))
     }
 
     pub async fn get_peer_by_guid(&self, guid: &[u8]) -> ResultType<Option<Peer>> {
         let row = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer where guid = ?",
+            "select p.*, GROUP_CONCAT(t.name) as tags from peer p left join peer_tags pt on p.guid = pt.peer_guid left join tags t on pt.tag_id = t.id where guid = ? group by p.guid",
         )
         .bind(guid)
         .fetch_optional(self.pool.get().await?.deref_mut())
         .await?;
-        Ok(row.map(Self::map_row))
+        Ok(row.map(Self::map_peer_row))
     }
 
     pub async fn get_peers(&self) -> ResultType<Vec<Peer>> {
         let rows = sqlx::query(
-            "select guid, id, uuid, pk, user, status, info, note, created_at, last_heartbeat from peer",
+            "select p.*, GROUP_CONCAT(t.name) as tags from peer p left join peer_tags pt on p.guid = pt.peer_guid left join tags t on pt.tag_id = t.id group by p.guid",
         )
         .fetch_all(self.pool.get().await?.deref_mut())
         .await?;
 
-        let peers = rows.into_iter().map(Self::map_row).collect();
+        let peers = rows.into_iter().map(Self::map_peer_row).collect();
 
         Ok(peers)
+    }
+
+    pub async fn get_tags(&self) -> ResultType<Vec<Tag>> {
+        let rows = sqlx::query("select * from tags")
+            .fetch_all(self.pool.get().await?.deref_mut())
+            .await?;
+
+        let tags = rows.into_iter().map(Self::map_tag_row).collect();
+
+        Ok(tags)
     }
 
     pub async fn insert_peer(
@@ -217,7 +268,7 @@ impl Database {
         info: &str,
     ) -> ResultType<Vec<u8>> {
         let guid = uuid::Uuid::new_v4().as_bytes().to_vec();
-        sqlx::query("insert into peer(guid, id, uuid, pk, info) values(?, ?, ?, ?, ?)")
+        sqlx::query("insert or ignore into peer(guid, id, uuid, pk, info) values(?, ?, ?, ?, ?)")
             .bind(&guid)
             .bind(id)
             .bind(uuid)
@@ -225,7 +276,16 @@ impl Database {
             .bind(info)
             .execute(self.pool.get().await?.deref_mut())
             .await?;
-        Ok(guid)
+
+        let result: (Vec<u8>,) =
+            sqlx::query_as("SELECT guid FROM peer WHERE id = ? AND uuid = ? AND pk = ?")
+                .bind(id)
+                .bind(uuid)
+                .bind(pk)
+                .fetch_one(self.pool.get().await?.deref_mut())
+                .await?;
+
+        Ok(result.0)
     }
 
     pub async fn update_pk(
@@ -251,6 +311,47 @@ impl Database {
             .bind(guid)
             .execute(self.pool.get().await?.deref_mut())
             .await?;
+        Ok(())
+    }
+
+    pub async fn update_peer_tags(&self, guid: &[u8], tags: &Vec<String>) -> ResultType<()> {
+        let mut conn = self.pool.get().await?;
+        let mut tx = conn.begin().await?;
+
+        // Step 1: Delete all existing associations for this peer
+        sqlx::query("delete from peer_tags where peer_guid = ?")
+            .bind(guid)
+            .execute(&mut *tx)
+            .await?;
+
+        // Step 2: Insert any new tags that don't exist yet
+        if !tags.is_empty() {
+            let placeholders = tags.iter().map(|_| "(?)").collect::<Vec<_>>().join(",");
+            let insert_tags_query =
+                format!("insert or ignore into tags (name) values {}", placeholders);
+
+            let mut query = sqlx::query(&insert_tags_query);
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            query.execute(&mut *tx).await?;
+
+            // Step 3: Create all associations
+            let placeholders = tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let insert_assoc_query = format!(
+                "insert or ignore into peer_tags (peer_guid, tag_id) select ?, id from tags where name in ({})",
+                placeholders
+            );
+
+            let mut query = sqlx::query(&insert_assoc_query);
+            query = query.bind(guid);
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            query.execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -370,7 +471,7 @@ mod tests {
             let cloned = db.clone();
             let id = i.to_string();
             let a = tokio::spawn(async move {
-                cloned.get_peer(&id).await.unwrap();
+                cloned.get_peer_by_id(&id).await.unwrap();
             });
             jobs.push(a);
         }

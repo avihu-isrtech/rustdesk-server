@@ -356,7 +356,7 @@ impl RendezvousServer {
                             .await;
                         if succesfully_updated {
                             let cloned_id = rp.id.clone();
-                            if let Ok(Some(peer)) = self.pm.db.get_peer(&cloned_id).await {
+                            if let Ok(Some(peer)) = self.pm.db.get_peer_by_id(&cloned_id).await {
                                 http_api::notify_peer_heartbeat(
                                     &peer.id,
                                     &base64::encode(peer.guid),
@@ -453,7 +453,8 @@ impl RendezvousServer {
                     if changed {
                         let cloned_id = id.clone();
                         self.pm.update_pk(id, peer, addr, ip, &rk).await;
-                        if let Ok(Some(peer)) = self.pm.db.get_peer(&cloned_id).await {
+                        let result = self.pm.db.get_peer_by_id(&cloned_id).await;
+                        if let Ok(Some(peer)) = result {
                             http_api::notify_peer_registered(&peer);
                         }
                     }
