@@ -207,7 +207,8 @@ async fn perform_login(
 ) -> Result<Json<LoginResponse>, StatusCode> {
     if (payload.email == "avihu@isrtech.co.il" && payload.password == "123123123") {
         Ok(Json(LoginResponse {
-            token: std::env::var("HTTP_API_TOKEN").unwrap()
+            token: std::env::var("HTTP_API_TOKEN").unwrap(),
+            email: payload.email,
         }))
     } else {
         Err(StatusCode::UNAUTHORIZED)
@@ -288,6 +289,7 @@ struct LoginPayload {
 
 #[derive(Serialize)]
 struct LoginResponse {
+    email: String,
     token: String,
 }
 
