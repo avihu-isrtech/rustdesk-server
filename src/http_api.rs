@@ -12,7 +12,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, patch},
+    routing::{get, patch, post},
     Json, Router,
 };
 use futures_core::stream::Stream;
@@ -162,6 +162,8 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
     let shared_state = Arc::new(state);
     let header_token = auth_token.clone();
 
+    let public_routes = Router::new().route("/api/v1/auth/login", post(perform_login));
+
     let protected_routes = Router::new()
         .route("/api/v1/tags", get(list_tags))
         .route("/api/v1/peers", get(list_peers))
@@ -186,6 +188,7 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
     });
 
     let app = Router::new()
+        .merge(public_routes)
         .merge(protected_routes)
         .merge(sse_route)
         .fallback(spa_service)
@@ -197,6 +200,18 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
         .serve(app.into_make_service())
         .await?;
     Ok(())
+}
+
+async fn perform_login(
+    Json(payload): Json<LoginPayload>,
+) -> Result<Json<LoginResponse>, StatusCode> {
+    if (payload.email == "avihu@isrtech.co.il" && payload.password == "123123123") {
+        Ok(Json(LoginResponse {
+            token: std::env::var("HTTP_API_TOKEN").unwrap()
+        }))
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 async fn list_peers(
@@ -263,6 +278,17 @@ struct InfoPayload {
 #[derive(Deserialize)]
 struct UserPayload {
     user: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LoginPayload {
+    email: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    token: String,
 }
 
 #[derive(Deserialize)]
