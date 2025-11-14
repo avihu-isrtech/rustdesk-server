@@ -205,7 +205,7 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
 async fn perform_login(
     Json(payload): Json<LoginPayload>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
-    if (payload.email == "avihu@isrtech.co.il" && payload.password == "123123123") {
+    if payload.email == std::env::var("MASTER_EMAIL").unwrap() && payload.password == std::env::var("MASTER_PASSWORD").unwrap() {
         Ok(Json(LoginResponse {
             token: std::env::var("HTTP_API_TOKEN").unwrap(),
             email: payload.email,
