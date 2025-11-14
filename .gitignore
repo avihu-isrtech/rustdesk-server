@@ -11,3 +11,4 @@ db_v2.sqlite3
 test.*
 .idea
 /static
+/scripts
