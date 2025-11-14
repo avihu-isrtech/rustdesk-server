@@ -372,10 +372,21 @@ async fn delete_peer(
     Extension(state): Extension<Arc<ApiState>>,
 ) -> Result<StatusCode, StatusCode> {
     let guid_bytes = decode_guid(&guid)?;
+    let peer = state
+        .db
+        .get_peer_by_guid(&guid_bytes)
+        .await
+        .map_err(|err| {
+            log::error!("Failed to fetch peer before delete: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     state.db.delete_peer(&guid_bytes).await.map_err(|err| {
         log::error!("Failed to delete peer: {}", err);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    if let (Some(peer), Some(pm)) = (peer, crate::peer::global_peer_map()) {
+        pm.remove(&peer.id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

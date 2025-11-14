@@ -7,6 +7,7 @@ use hbb_common::{
     tokio::sync::{Mutex, RwLock},
     ResultType,
 };
+use once_cell::sync::OnceCell;
 use serde_derive::{Deserialize, Serialize};
 use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Instant};
 
@@ -96,6 +97,8 @@ pub(crate) struct PeerMap {
     map: Arc<RwLock<HashMap<String, LockPeer>>>,
     pub(crate) db: database::Database,
 }
+
+static GLOBAL_PEER_MAP: OnceCell<PeerMap> = OnceCell::new();
 
 impl PeerMap {
     pub(crate) async fn new() -> ResultType<Self> {
@@ -200,6 +203,11 @@ impl PeerMap {
     }
 
     #[inline]
+    pub(crate) async fn remove(&self, id: &str) {
+        self.map.write().await.remove(id);
+    }
+
+    #[inline]
     pub(crate) async fn get_in_memory(&self, id: &str) -> Option<LockPeer> {
         self.map.read().await.get(id).cloned()
     }
@@ -297,4 +305,12 @@ impl From<PeerStatus> for i64 {
     fn from(value: PeerStatus) -> Self {
         value as i64
     }
+}
+
+pub(crate) fn register_global_peer_map(pm: &PeerMap) {
+    let _ = GLOBAL_PEER_MAP.set(pm.clone());
+}
+
+pub(crate) fn global_peer_map() -> Option<PeerMap> {
+    GLOBAL_PEER_MAP.get().cloned()
 }
