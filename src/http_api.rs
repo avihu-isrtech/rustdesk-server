@@ -58,7 +58,7 @@ impl From<Tag> for TagResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct PeerResponse {
     guid: String,
     id: Option<String>,
