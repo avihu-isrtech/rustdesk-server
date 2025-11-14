@@ -51,7 +51,7 @@ pub(crate) fn get_servers(s: &str, tag: &str) -> Vec<String> {
 #[allow(dead_code)]
 #[inline]
 fn arg_name(name: &str) -> String {
-    name.to_uppercase().replace('_', "-")
+    name.to_uppercase().replace('-', "_")
 }
 
 #[allow(dead_code)]
