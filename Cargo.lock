@@ -1237,6 +1237,7 @@ dependencies = [
  "sodiumoxide",
  "sqlx",
  "tokio-tungstenite 0.17.1",
+ "tokio-util",
  "tower",
  "tower-http",
  "tungstenite 0.17.2",

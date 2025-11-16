@@ -12,3 +12,4 @@ test.*
 .idea
 /static
 /scripts
+/download-files

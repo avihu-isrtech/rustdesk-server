@@ -1,10 +1,10 @@
 use crate::database::{self, Database, Peer, Tag};
 use async_stream::stream;
 use axum::{
-    body::{boxed, Body, Full},
+    body::{boxed, Body, Full, StreamBody},
     extract::{Extension, Path, Query},
     http::{
-        header::{AUTHORIZATION, CONTENT_TYPE},
+        header::{AUTHORIZATION, CONTENT_TYPE, CONTENT_DISPOSITION, CONTENT_LENGTH},
         HeaderValue, Method, Request, StatusCode, Uri,
     },
     middleware::{from_fn, Next},
@@ -23,9 +23,12 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{convert::Infallible, net::SocketAddr, process, sync::Arc, thread, time::Duration};
 use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 use tower::service_fn;
 use tower_http::cors::CorsLayer;
 use urlencoding::decode;
+
 
 const HTTP_PORT: u16 = 37_000;
 const EVENT_BUFFER: usize = 128;
@@ -162,8 +165,10 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
     let shared_state = Arc::new(state);
     let header_token = auth_token.clone();
 
-    let public_routes = Router::new().route("/api/v1/auth/login", post(perform_login));
-
+    let public_routes = Router::new()
+        .route("/api/v1/auth/login", post(perform_login))
+        .route("/api/v1/download/temp", get(download_temp_app));
+    
     let protected_routes = Router::new()
         .route("/api/v1/tags", get(list_tags))
         .route("/api/v1/peers", get(list_peers))
@@ -172,6 +177,9 @@ async fn run_http_server(state: ApiState, auth_token: Arc<String>) -> ResultType
         .route("/api/v1/peers/:guid/note", patch(update_note))
         .route("/api/v1/peers/:guid/info", patch(update_info))
         .route("/api/v1/peers/:guid/user", patch(update_user))
+        .route("/api/v1/download/permanent_app", patch(download_permanent_app))
+        .route("/api/v1/download/windows_controller_app", patch(download_windows_controller_app))
+        .route("/api/v1/download/windows_attacher", patch(download_windows_attacher))
         .layer(from_fn({
             let token = header_token.clone();
             move |req, next| {
@@ -296,6 +304,22 @@ struct LoginResponse {
 #[derive(Deserialize)]
 struct SseAuthQuery {
     token: String,
+}
+
+async fn download_temp_app() -> Result<Response, StatusCode> {
+    download_file(&std::env::var("DOWNLOAD_TEMP_APK_FILE_ABS_PATH").unwrap_or_default(), "application/vnd.android.package-archive").await
+}
+
+async fn download_permanent_app() -> Result<Response, StatusCode> {
+    download_file(&std::env::var("DOWNLOAD_PERMANENT_APK_FILE_ABS_PATH").unwrap_or_default(), "application/vnd.android.package-archive").await
+}
+
+async fn download_windows_controller_app() -> Result<Response, StatusCode> {
+    download_file(&std::env::var("DOWNLOAD_WINDOWS_CONTROLLER_FILE_ABS_PATH").unwrap_or_default(), "application/x-msdownload").await
+}
+
+async fn download_windows_attacher() -> Result<Response, StatusCode> {
+    download_file(&std::env::var("DOWNLOAD_WINDOWS_ATTACHER_FILE_ABS_PATH").unwrap_or_default(), "application/octet-stream").await
 }
 
 async fn update_peer_tags(
@@ -538,4 +562,43 @@ fn resolve_asset_path(uri: &Uri) -> Option<&str> {
     } else {
         Some(path)
     }
+}
+
+async fn download_file(file_path: &str, mime_type: &str) -> Result<Response, StatusCode> {
+    let file = File::open(&file_path).await.map_err(|err| {
+        log::error!("Failed to open file: {}", err);
+        StatusCode::NOT_FOUND
+    })?;
+
+    let metadata = file.metadata().await.map_err(|err| {
+        log::error!("Failed to read file metadata: {}", err);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let stream = ReaderStream::new(file);
+    let body = StreamBody::new(stream);
+
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+
+    let mut response = Response::new(boxed(body));
+
+    let mime_header = HeaderValue::from_str(mime_type).unwrap_or_else(|err| {
+        log::error!("Invalid MIME type '{}': {}", mime_type, err);
+        HeaderValue::from_static("application/octet-stream")
+    });
+    response.headers_mut().insert(CONTENT_TYPE, mime_header);
+
+    let disposition = format!("attachment; filename=\"{}\"", filename);
+    if let Ok(header_value) = HeaderValue::from_str(&disposition) {
+        response.headers_mut().insert(CONTENT_DISPOSITION, header_value);
+    }
+
+    if let Ok(length) = HeaderValue::from_str(&metadata.len().to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, length);
+    }
+
+    Ok(response)
 }
